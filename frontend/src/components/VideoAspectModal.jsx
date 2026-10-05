@@ -17,6 +17,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { io } from 'socket.io-client';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
@@ -143,6 +144,35 @@ export default function VideoAspectModal({ isOpen, onClose, initialVideoFile = n
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
+
+  // Connect to backend Socket.io for real-time streaming progress
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      const socket = io(BACKEND_URL, {
+        transports: ['websocket', 'polling'],
+        reconnectionAttempts: 3
+      });
+
+      if (fileId) {
+        socket.emit('join_job', fileId);
+      }
+
+      socket.on('job_progress', (data) => {
+        if (!fileId || data.fileId === fileId) {
+          if (data.percent >= 80) setProgressStep(4);
+          else if (data.percent >= 50) setProgressStep(3);
+          else if (data.percent >= 25) setProgressStep(2);
+        }
+      });
+
+      return () => {
+        socket.disconnect();
+      };
+    } catch (e) {
+      console.warn('Socket.io connection warning:', e);
+    }
+  }, [isOpen, fileId]);
 
   if (!isOpen) return null;
 

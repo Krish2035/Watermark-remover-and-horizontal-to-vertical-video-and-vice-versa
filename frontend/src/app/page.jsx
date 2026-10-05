@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import UploadBox from '../components/UploadBox';
 import ScanProgress from '../components/ScanProgress';
 import ResultViewer from '../components/ResultViewer';
 import TechStackModal from '../components/TechStackModal';
 import VideoAspectModal from '../components/VideoAspectModal';
+import AuthModal from '../components/AuthModal';
 import Features from '../components/Features';
 import Footer from '../components/Footer';
 import { Sparkles, ShieldCheck, Zap } from 'lucide-react';
@@ -14,6 +15,9 @@ import { Sparkles, ShieldCheck, Zap } from 'lucide-react';
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
 export default function Home() {
+  const [user, setUser] = useState(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authTab, setAuthTab] = useState('signin');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [mediaType, setMediaType] = useState('image');
@@ -24,6 +28,46 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState(null);
   const [isTechStackOpen, setIsTechStackOpen] = useState(false);
   const [isAspectModalOpen, setIsAspectModalOpen] = useState(false);
+
+  // Called when component mounts/renders: Checks HttpOnly JWT cookie and retrieves user profile
+  useEffect(() => {
+    async function verifyUserSession() {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+          credentials: 'include' // Transmits HttpOnly cookie to backend for verification
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.user) {
+            setUser(data.user);
+          }
+        }
+      } catch (err) {
+        console.warn('Initial session verification:', err.message);
+      }
+    }
+    verifyUserSession();
+  }, []);
+
+  // Logout handler: Clears HttpOnly cookie on backend and resets user state
+  const handleLogout = async () => {
+    try {
+      await fetch(`${BACKEND_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch (err) {
+      console.error('Logout error:', err);
+    } finally {
+      setUser(null);
+    }
+  };
+
+  // Open Auth Modal
+  const handleOpenAuth = (tab = 'signin') => {
+    setAuthTab(tab);
+    setIsAuthModalOpen(true);
+  };
 
   // 1. User picks file or drops it into big gradient box
   const handleFileSelected = async (file) => {
@@ -45,6 +89,7 @@ export default function Home() {
 
       const res = await fetch(`${BACKEND_URL}/api/upload`, {
         method: 'POST',
+        credentials: 'include',
         body: formData
       });
 
@@ -100,6 +145,7 @@ export default function Home() {
       const res = await fetch(`${BACKEND_URL}/api/remove-watermark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           fileId,
           mediaType,
@@ -133,10 +179,13 @@ export default function Home() {
 
   return (
     <div className="app-container">
-      {/* Header */}
+      {/* Header with Auth controls & Session badge */}
       <Header
         onOpenTechStack={() => setIsTechStackOpen(true)}
         onOpenAspectConverter={() => setIsAspectModalOpen(true)}
+        user={user}
+        onOpenAuth={handleOpenAuth}
+        onLogout={handleLogout}
       />
 
       {/* Main Content */}
@@ -228,6 +277,14 @@ export default function Home() {
         onClose={() => setIsAspectModalOpen(false)}
         initialVideoFile={mediaType === 'video' ? selectedFile : null}
         initialFileId={mediaType === 'video' ? fileId : null}
+      />
+
+      {/* Sign In & Sign Up JWT HttpOnly Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        initialTab={authTab}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAuthSuccess={(userData) => setUser(userData)}
       />
 
       {/* Footer */}

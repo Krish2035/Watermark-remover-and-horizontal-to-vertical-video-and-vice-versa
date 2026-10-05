@@ -1,25 +1,61 @@
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
+import { Server as SocketIOServer } from 'socket.io';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './swagger.js';
 import { detectWatermarkRegion } from './services/detector.js';
 import { removeImageWatermark } from './services/imageProcessor.js';
 import { removeVideoWatermark, getVideoDimensions } from './services/videoProcessor.js';
 import { getVideoDetails, convertVideoAspectRatio } from './services/aspectRatioProcessor.js';
+import { saveJobRecord, getRecentJobs, createUser, findUserByEmail, findUserById } from './db/index.js';
+import { cacheGet, cacheSet } from './services/redisClient.js';
+import {
+  hashPassword,
+  comparePassword,
+  generateToken,
+  requireAuth,
+  optionalAuth,
+  COOKIE_OPTIONS,
+  AUTH_COOKIE_NAME
+} from './services/auth.js';
+import { globalLimiter, authLimiter, mediaLimiter } from './services/rateLimiter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors({ origin: '*' }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Setup Socket.io for real-time progress updates
+const io = new SocketIOServer(server, {
+  cors: { origin: true, credentials: true, methods: ['GET', 'POST'] }
+});
+
+io.on('connection', (socket) => {
+  socket.on('join_job', (fileId) => {
+    socket.join(fileId);
+  });
+});
+
+// Middleware with Credentials & Cookies support
+app.use(cors({
+  origin: true, // Allow frontend origin dynamically
+  credentials: true // Allow HttpOnly cookies to pass through
+}));
+app.use(cookieParser());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Apply Global DDoS Rate Limiter
+app.use(globalLimiter);
 
 // Storage directories
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -34,6 +70,13 @@ const PROCESSED_DIR = path.join(__dirname, 'processed');
 // Serve static uploads and processed files
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/processed', express.static(PROCESSED_DIR));
+
+// Interactive Swagger UI documentation
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+app.get('/api/docs.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.send(swaggerSpec);
+});
 
 // In-memory file registry
 const fileRegistry = new Map();
@@ -64,21 +107,211 @@ const upload = multer({
   }
 });
 
-// Health check endpoint
+/**
+ * ====================================================================
+ * AUTHENTICATION ENDPOINTS (JWT + HttpOnly Secure Cookies)
+ * ====================================================================
+ */
+
+/**
+ * @openapi
+ * /api/auth/signup:
+ *   post:
+ *     summary: User Registration
+ *     description: Creates a new user account, hashes password, and issues an HttpOnly JWT cookie.
+ */
+app.post('/api/auth/signup', authLimiter, async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const existingUser = await findUserByEmail(email);
+    if (existingUser) {
+      return res.status(409).json({ error: 'An account with this email address already exists.' });
+    }
+
+    const hashedPassword = await hashPassword(password);
+    const newUser = await createUser({
+      name,
+      email,
+      password: hashedPassword
+    });
+
+    const token = generateToken(newUser);
+
+    // Set JWT in protected HttpOnly cookie (inaccessible to JavaScript)
+    res.cookie(AUTH_COOKIE_NAME, token, COOKIE_OPTIONS);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role || 'user'
+      }
+    });
+  } catch (err) {
+    console.error('Sign up error:', err);
+    return res.status(500).json({ error: err.message || 'Registration failed' });
+  }
+});
+
+/**
+ * @openapi
+ * /api/auth/signin:
+ *   post:
+ *     summary: User Login
+ *     description: Authenticates user credentials, sets protected HttpOnly JWT cookie.
+ */
+app.post('/api/auth/signin', authLimiter, async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const user = await findUserByEmail(email);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const isMatch = await comparePassword(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const token = generateToken(user);
+
+    // Set JWT in protected HttpOnly cookie
+    res.cookie(AUTH_COOKIE_NAME, token, COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Signed in successfully',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role || 'user'
+      }
+    });
+  } catch (err) {
+    console.error('Sign in error:', err);
+    return res.status(500).json({ error: err.message || 'Login failed' });
+  }
+});
+
+/**
+ * @openapi
+ * /api/auth/me:
+ *   get:
+ *     summary: Get Current Logged-in User Profile
+ *     description: Reads and verifies the HttpOnly JWT cookie from the client request.
+ */
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  try {
+    const user = await findUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User profile not found' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role || 'user'
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * @openapi
+ * /api/auth/logout:
+ *   post:
+ *     summary: User Sign Out
+ *     description: Clears the HttpOnly JWT cookie.
+ */
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    ...COOKIE_OPTIONS,
+    maxAge: 0
+  });
+  return res.status(200).json({ success: true, message: 'Logged out successfully' });
+});
+
+/**
+ * ====================================================================
+ * CORE MEDIA PROCESSING & HEALTH ENDPOINTS
+ * ====================================================================
+ */
+
+/**
+ * @openapi
+ * /api/health:
+ *   get:
+ *     summary: System Health & Architecture Check
+ */
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'online',
-    service: 'AI Watermark Remover Engine',
-    version: '1.0.0',
+    service: 'ClearMark AI Inpainting & Aspect Ratio Engine',
+    version: '2.0.0',
     timestamp: new Date().toISOString(),
-    supportedTypes: ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm']
+    supportedTypes: ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm'],
+    features: [
+      'jwt_httponly_auth',
+      'ddos_rate_limiting',
+      'ai_watermark_removal',
+      'horizontal_vertical_converter',
+      'redis_cache',
+      'neon_postgresql_drizzle',
+      'socket_io',
+      'swagger_ui'
+    ]
   });
 });
 
 /**
- * 1. Upload File & Automatically Detect Watermark
+ * @openapi
+ * /api/jobs:
+ *   get:
+ *     summary: List Recent Processing Jobs
  */
-app.post('/api/upload', upload.single('media'), async (req, res) => {
+app.get('/api/jobs', async (req, res) => {
+  try {
+    const jobs = await getRecentJobs(20);
+    if (jobs && jobs.length > 0) {
+      return res.json({ success: true, count: jobs.length, jobs });
+    }
+    const memoryJobs = Array.from(fileRegistry.values()).slice(-20);
+    return res.json({ success: true, count: memoryJobs.length, jobs: memoryJobs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * @openapi
+ * /api/upload:
+ *   post:
+ *     summary: Upload Media & Auto-Detect Watermark
+ */
+app.post('/api/upload', optionalAuth, upload.single('media'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -88,14 +321,12 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
     const isVideo = file.mimetype.startsWith('video/');
     const mediaType = isVideo ? 'video' : 'image';
     const fileId = path.parse(file.filename).name;
-    const fileExt = path.parse(file.filename).ext;
     const serverUrl = `${req.protocol}://${req.get('host')}`;
     const fileUrl = `${serverUrl}/uploads/${file.filename}`;
 
     let detectionData = null;
 
     try {
-      // Analyze image or video using Galaxy AI Computer Vision detector
       detectionData = await detectWatermarkRegion(file.path);
     } catch (e) {
       console.warn('Auto detection warning:', e);
@@ -105,21 +336,11 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
       const { width: vidW, height: vidH } = isVideo
         ? await getVideoDimensions(file.path)
         : { width: 1280, height: 720 };
-      
+
       const brW = Math.round(vidW * 0.14);
       const brH = Math.round(vidH * 0.16);
       const brX = Math.round(vidW * 0.84);
       const brY = Math.round(vidH * 0.76);
-
-      const blW = Math.round(vidW * 0.14);
-      const blH = Math.round(vidH * 0.16);
-      const blX = Math.round(vidW * 0.02);
-      const blY = Math.round(vidH * 0.76);
-
-      const trW = Math.round(vidW * 0.14);
-      const trH = Math.round(vidH * 0.16);
-      const trX = Math.round(vidW * 0.84);
-      const trY = Math.round(vidH * 0.03);
 
       detectionData = {
         imageWidth: vidW,
@@ -132,18 +353,6 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
             name: 'Bottom Right',
             confidence: 0.9,
             box: { x: brX, y: brY, width: brW, height: brH }
-          },
-          {
-            id: 'bottom-left',
-            name: 'Bottom Left',
-            confidence: 0.75,
-            box: { x: blX, y: blY, width: blW, height: blH }
-          },
-          {
-            id: 'top-right',
-            name: 'Top Right',
-            confidence: 0.7,
-            box: { x: trX, y: trY, width: trW, height: trH }
           }
         ]
       };
@@ -151,6 +360,7 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
 
     const fileRecord = {
       fileId,
+      userId: req.user?.id || null,
       filename: file.filename,
       originalName: file.originalname,
       mediaType,
@@ -159,10 +369,24 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
       filePath: file.path,
       fileUrl,
       detectionData,
+      status: 'uploaded',
       createdAt: Date.now()
     };
 
     fileRegistry.set(fileId, fileRecord);
+
+    await cacheSet(`file:${fileId}`, fileRecord, 7200);
+    await saveJobRecord({
+      fileId,
+      userId: req.user?.id || null,
+      originalName: file.originalname,
+      mediaType,
+      mimeType: file.mimetype,
+      fileSize: file.size,
+      originalUrl: fileUrl,
+      status: 'uploaded',
+      metadata: { detection: detectionData }
+    });
 
     return res.status(200).json({
       success: true,
@@ -181,9 +405,12 @@ app.post('/api/upload', upload.single('media'), async (req, res) => {
 });
 
 /**
- * 2. Remove Watermark from Image or Video
+ * @openapi
+ * /api/remove-watermark:
+ *   post:
+ *     summary: Remove Watermark from Image or Video
  */
-app.post('/api/remove-watermark', async (req, res) => {
+app.post('/api/remove-watermark', mediaLimiter, optionalAuth, async (req, res) => {
   const startTime = Date.now();
   try {
     const { fileId, box, mediaType, maskBase64 } = req.body;
@@ -192,9 +419,14 @@ app.post('/api/remove-watermark', async (req, res) => {
       return res.status(400).json({ error: 'fileId is required' });
     }
 
+    io.to(fileId).emit('job_progress', { fileId, stage: 'analyzing', percent: 25, message: 'Analyzing watermark coordinates...' });
+
     let fileRecord = fileRegistry.get(fileId);
     if (!fileRecord) {
-      // Auto-recover from disk if server restarted
+      fileRecord = await cacheGet(`file:${fileId}`);
+    }
+
+    if (!fileRecord) {
       const files = fs.readdirSync(UPLOADS_DIR);
       const matched = files.find((f) => f.startsWith(fileId));
       if (matched) {
@@ -219,30 +451,20 @@ app.post('/api/remove-watermark', async (req, res) => {
       return res.status(404).json({ error: 'Source file not found or expired. Please re-upload.' });
     }
 
-    // Determine watermark bounding box
     let targetBox = box;
     if (!targetBox || !targetBox.width || !targetBox.height) {
       if (fileRecord.detectionData && fileRecord.detectionData.detectedBox) {
         targetBox = fileRecord.detectionData.detectedBox;
       } else {
-        try {
-          const det = await detectWatermarkRegion(fileRecord.filePath);
-          if (det && det.detectedBox) {
-            targetBox = det.detectedBox;
-          } else if (fileRecord.mediaType === 'video') {
-            const { width: vidW, height: vidH } = await getVideoDimensions(fileRecord.filePath);
-            targetBox = {
-              x: Math.round(vidW * 0.84),
-              y: Math.round(vidH * 0.76),
-              width: Math.round(vidW * 0.14),
-              height: Math.round(vidH * 0.16)
-            };
-          } else {
-            targetBox = { x: 100, y: 100, width: 150, height: 99 };
-          }
-        } catch (e) {
-          targetBox = { x: 100, y: 100, width: 150, height: 99 };
-        }
+        const { width: vidW, height: vidH } = fileRecord.mediaType === 'video'
+          ? await getVideoDimensions(fileRecord.filePath)
+          : { width: 1280, height: 720 };
+        targetBox = {
+          x: Math.round(vidW * 0.84),
+          y: Math.round(vidH * 0.76),
+          width: Math.round(vidW * 0.14),
+          height: Math.round(vidH * 0.16)
+        };
       }
     }
 
@@ -260,8 +482,9 @@ app.post('/api/remove-watermark', async (req, res) => {
       fs.writeFileSync(maskPath, Buffer.from(base64Data, 'base64'));
     }
 
-    let result = null;
+    io.to(fileId).emit('job_progress', { fileId, stage: 'processing', percent: 65, message: 'Reconstructing media pixels...' });
 
+    let result = null;
     if (fileRecord.mediaType === 'video') {
       result = await removeVideoWatermark(fileRecord.filePath, cleanFilePath, targetBox);
     } else {
@@ -269,27 +492,50 @@ app.post('/api/remove-watermark', async (req, res) => {
     }
 
     const processingTimeMs = Date.now() - startTime;
+    const downloadUrl = `${serverUrl}/api/download/${fileRecord.mediaType}/${cleanFilename}?name=${encodeURIComponent(
+      'clean-' + fileRecord.originalName
+    )}`;
 
-    return res.status(200).json({
+    const responsePayload = {
       success: true,
       fileId,
       mediaType: fileRecord.mediaType,
       originalUrl: fileRecord.fileUrl,
       cleanUrl,
-      downloadUrl: `${serverUrl}/api/download/${fileRecord.mediaType}/${cleanFilename}?name=${encodeURIComponent(
-        'clean-' + fileRecord.originalName
-      )}`,
+      downloadUrl,
       appliedBox: result.processedBox,
       processingTimeMs
+    };
+
+    await cacheSet(`job:${fileId}`, responsePayload, 7200);
+    await saveJobRecord({
+      fileId,
+      userId: req.user?.id || fileRecord.userId || null,
+      originalName: fileRecord.originalName,
+      mediaType: fileRecord.mediaType,
+      operation: 'watermark_removal',
+      status: 'completed',
+      resultUrl: cleanUrl,
+      downloadUrl,
+      metadata: { appliedBox: result.processedBox },
+      processingTimeMs
     });
+
+    io.to(fileId).emit('job_complete', responsePayload);
+
+    return res.status(200).json(responsePayload);
   } catch (error) {
     console.error('Watermark removal error:', error);
+    io.to(req.body?.fileId).emit('job_error', { error: error.message });
     return res.status(500).json({ error: error.message || 'Watermark removal failed' });
   }
 });
 
 /**
- * 3. Video Metadata / Aspect Ratio Inspection Endpoint
+ * @openapi
+ * /api/video-details:
+ *   post:
+ *     summary: Inspect Video Metadata & Aspect Ratio
  */
 app.post('/api/video-details', upload.single('video'), async (req, res) => {
   try {
@@ -314,7 +560,7 @@ app.post('/api/video-details', upload.single('video'), async (req, res) => {
         createdAt: Date.now()
       });
     } else if (fileId) {
-      let record = fileRegistry.get(fileId);
+      let record = fileRegistry.get(fileId) || (await cacheGet(`file:${fileId}`));
       if (!record) {
         const files = fs.readdirSync(UPLOADS_DIR);
         const matched = files.find((f) => f.startsWith(fileId));
@@ -349,10 +595,12 @@ app.post('/api/video-details', upload.single('video'), async (req, res) => {
 });
 
 /**
- * 4. Video Aspect Ratio Converter (Horizontal ⇄ Vertical)
- * 16:9 to 9:16 or 9:16 to 16:9
+ * @openapi
+ * /api/convert-aspect-ratio:
+ *   post:
+ *     summary: Video Aspect Ratio Converter (Horizontal ⇄ Vertical)
  */
-app.post('/api/convert-aspect-ratio', upload.single('video'), async (req, res) => {
+app.post('/api/convert-aspect-ratio', mediaLimiter, optionalAuth, upload.single('video'), async (req, res) => {
   const startTime = Date.now();
   try {
     let filePath = null;
@@ -361,9 +609,7 @@ app.post('/api/convert-aspect-ratio', upload.single('video'), async (req, res) =
     let fileUrl = null;
     const serverUrl = `${req.protocol}://${req.get('host')}`;
 
-    // Target orientation: 'vertical' (9:16) or 'horizontal' (16:9)
     const targetOrientation = req.body?.targetOrientation || 'vertical';
-    // Mode: 'blur' (blurred background), 'pad' (black bars), 'crop' (fill & center crop)
     const mode = req.body?.mode || 'blur';
     const resolution = req.body?.resolution || 'auto';
 
@@ -382,7 +628,7 @@ app.post('/api/convert-aspect-ratio', upload.single('video'), async (req, res) =
         createdAt: Date.now()
       });
     } else if (fileId) {
-      let record = fileRegistry.get(fileId);
+      let record = fileRegistry.get(fileId) || (await cacheGet(`file:${fileId}`));
       if (!record) {
         const files = fs.readdirSync(UPLOADS_DIR);
         const matched = files.find((f) => f.startsWith(fileId));
@@ -402,8 +648,9 @@ app.post('/api/convert-aspect-ratio', upload.single('video'), async (req, res) =
       return res.status(400).json({ error: 'Video file not found or expired. Please upload a video.' });
     }
 
-    const inputDetails = await getVideoDetails(filePath);
+    io.to(fileId).emit('job_progress', { fileId, stage: 'transforming', percent: 40, message: 'Executing aspect ratio filters...' });
 
+    const inputDetails = await getVideoDetails(filePath);
     const convertedFilename = `${fileId}-${targetOrientation}-${mode}.mp4`;
     const convertedFilePath = path.join(PROCESSED_DIR, convertedFilename);
     const convertedUrl = `${serverUrl}/processed/${convertedFilename}`;
@@ -418,28 +665,51 @@ app.post('/api/convert-aspect-ratio', upload.single('video'), async (req, res) =
 
     const processingTimeMs = Date.now() - startTime;
     const downloadName = `${targetOrientation === 'vertical' ? 'vertical-9x16' : 'horizontal-16x9'}-${originalName}`;
+    const downloadUrl = `${serverUrl}/api/download/video/${convertedFilename}?name=${encodeURIComponent(downloadName)}`;
 
-    return res.status(200).json({
+    const responsePayload = {
       success: true,
       fileId,
       originalUrl: fileUrl,
       convertedUrl,
-      downloadUrl: `${serverUrl}/api/download/video/${convertedFilename}?name=${encodeURIComponent(downloadName)}`,
+      downloadUrl,
       inputDetails,
       targetOrientation,
       targetWidth: convertResult.targetWidth,
       targetHeight: convertResult.targetHeight,
       mode,
       processingTimeMs
+    };
+
+    await cacheSet(`aspect:${fileId}`, responsePayload, 7200);
+    await saveJobRecord({
+      fileId,
+      userId: req.user?.id || null,
+      originalName,
+      mediaType: 'video',
+      operation: 'aspect_conversion',
+      status: 'completed',
+      resultUrl: convertedUrl,
+      downloadUrl,
+      metadata: { targetOrientation, mode, width: convertResult.targetWidth, height: convertResult.targetHeight },
+      processingTimeMs
     });
+
+    io.to(fileId).emit('job_complete', responsePayload);
+
+    return res.status(200).json(responsePayload);
   } catch (error) {
     console.error('Aspect ratio conversion error:', error);
+    io.to(req.body?.fileId).emit('job_error', { error: error.message });
     return res.status(500).json({ error: error.message || 'Aspect ratio conversion failed' });
   }
 });
 
 /**
- * 3. File Download Endpoint
+ * @openapi
+ * /api/download/{type}/{filename}:
+ *   get:
+ *     summary: Download Clean or Converted Media
  */
 app.get('/api/download/:type/:filename', (req, res) => {
   const { filename } = req.params;
@@ -457,10 +727,14 @@ app.get('/api/download/:type/:filename', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`===============================================`);
-  console.log(`🚀 Watermark Remover Backend API running!`);
+  console.log(`🚀 ClearMark AI Backend Engine running!`);
   console.log(`📡 URL: http://localhost:${PORT}`);
   console.log(`⚡ Health: http://localhost:${PORT}/api/health`);
+  console.log(`📖 Swagger API Docs: http://localhost:${PORT}/api/docs`);
+  console.log(`🛡️ Rate Limiting & DDoS Shield: Active`);
+  console.log(`🔒 JWT HttpOnly Cookie Auth: Active`);
+  console.log(`⚡ WebSocket / Socket.io: Active`);
   console.log(`===============================================`);
 });

@@ -8,38 +8,38 @@ export default function TechStackModal({ isOpen, onClose }) {
 
   const stackCategories = [
     {
-      title: '1. Frontend Layer',
+      title: '1. Frontend & Edge Hosting',
       icon: <Layers size={20} color="#38bdf8" />,
       color: '#38bdf8',
       desc: 'High-performance interactive web interface',
       techs: [
-        { name: 'Next.js 14/15', role: 'React Framework, SSR/SSG, fast routing & asset optimization' },
-        { name: 'HTML5 Canvas API', role: 'Interactive watermark bounding box selection & client brush' },
-        { name: 'Vanilla CSS Design System', role: 'Glassmorphism, glow effects, responsive split slider' },
-        { name: 'Lucide React & Confetti', role: 'Modern UI icons and celebratory completion animations' }
+        { name: 'Vercel Edge Hosting', role: 'Global edge deployment with automated CI/CD and CDN asset distribution' },
+        { name: 'Next.js 14 & React 18', role: 'Server and client components, SSR/SSG, fast routing & optimization' },
+        { name: 'Socket.io Client', role: 'Real-time WebSocket streaming for 0-100% video transformation progress' },
+        { name: 'Calibri Design System', role: 'Glassmorphism, cosmic dark mode, interactive bounding box canvas' }
       ]
     },
     {
-      title: '2. Backend & API Layer',
+      title: '2. Backend, API & Interactive Docs',
       icon: <Server size={20} color="#818cf8" />,
       color: '#818cf8',
-      desc: 'Multipart media ingestion and orchestration',
+      desc: 'Multipart ingestion and enterprise orchestration',
       techs: [
-        { name: 'Node.js & Express', role: 'RESTful API routing, file lifecycle management' },
-        { name: 'Multer', role: 'Multipart streaming file upload with size/type verification' },
-        { name: 'UUID & File Registry', role: 'Isolated session tracking and secure media access' }
+        { name: 'Node.js & Express (Render)', role: 'Microservice container hosted on Render cloud infrastructure' },
+        { name: 'Swagger UI & OpenAPI 3.0', role: 'Interactive API playground and documentation at /api/docs' },
+        { name: 'Socket.io WebSocket Engine', role: 'Bidirectional job event streaming (analyzing, processing, completed)' },
+        { name: 'Multer & File Registry', role: 'Multi-part streaming ingestion with auto disk recovery' }
       ]
     },
     {
-      title: '3. Image Inpainting & Vision Engine',
-      icon: <ImageIcon size={20} color="#ec4899" />,
-      color: '#ec4899',
-      desc: 'Eliminating static watermarks with texture reconstruction',
+      title: '3. Database & Caching Layer',
+      icon: <Database size={20} color="#10b981" />,
+      color: '#10b981',
+      desc: 'Persistent job history and microsecond cache performance',
       techs: [
-        { name: 'Sharp (libvips)', role: 'High-speed image decoding, buffer manipulation & lossless export' },
-        { name: 'Contextual Inpainter (Telea / FMM)', role: 'Fast Marching & Poisson boundary reconstruction' },
-        { name: 'LaMa (Large Mask Inpainting)', role: 'Recommended AI Model: Fourier convolutions for photorealistic fill' },
-        { name: 'YOLOv8 / SAM (Segment Anything)', role: 'Recommended AI: Auto-detection of logos and text contours' }
+        { name: 'Neon Tech (Serverless PostgreSQL)', role: 'Auto-scaling relational database with instant branching' },
+        { name: 'Drizzle ORM & Drizzle Kit', role: 'Type-safe SQL schema definitions, migrations and high-speed queries' },
+        { name: 'Redis Cache & Queue', role: 'Sub-millisecond job state cache and distributed rate limiting' }
       ]
     },
     {
@@ -48,22 +48,21 @@ export default function TechStackModal({ isOpen, onClose }) {
       color: '#f59e0b',
       desc: 'Motion frame interpolation and audio sync preservation',
       techs: [
-        { name: 'FFmpeg (ffmpeg-static)', role: 'Cross-platform bundled standalone media transcoding engine' },
-        { name: 'FFmpeg delogo filter', role: 'Interpolates surround pixels across bounding box seamlessly' },
-        { name: 'H.264 (libx264) + AAC', role: 'Ultra-fast web-compatible streaming MP4 encoding' },
-        { name: 'ProPainter / E2FGVI (Optional AI)', role: 'State-of-the-art flow-guided deep video inpainting' }
+        { name: 'FFmpeg & Docker Container', role: 'Production containerized FFmpeg filter graph transformations' },
+        { name: 'Aspect Ratio Studio (16:9 ⇄ 9:16)', role: 'Studio Blurred Background, Cinema Black Bars, Center Crop & Fill' },
+        { name: 'FFmpeg delogo filter', role: 'Contextual spatial inpainting erasing logos and channel stamps' },
+        { name: 'H.264 (libx264) + AAC', role: 'Fast-start streaming container encoding' }
       ]
     },
     {
-      title: '5. Production Scale Infrastructure',
-      icon: <Database size={20} color="#10b981" />,
-      color: '#10b981',
-      desc: 'What you need to scale to millions of users',
+      title: '5. Containerization & DevOps',
+      icon: <Cpu size={20} color="#ec4899" />,
+      color: '#ec4899',
+      desc: 'Multi-cloud scalable infrastructure',
       techs: [
-        { name: 'BullMQ + Redis', role: 'Background worker queue so long videos never timeout HTTP calls' },
-        { name: 'AWS S3 / Cloudflare R2', role: 'Presigned direct-to-cloud uploads to keep server bandwidth light' },
-        { name: 'Serverless GPU (RunPod / Replicate)', role: 'Runs heavy PyTorch AI inpainting models on-demand' },
-        { name: 'WebSockets / SSE', role: 'Real-time 0-100% progress streaming for long video renders' }
+        { name: 'Docker & Dockerfile', role: 'Containerized Linux runtime bundling Node 20, Python 3, and FFmpeg' },
+        { name: 'Docker Compose', role: 'Local full-stack orchestration: Backend + Redis + PostgreSQL' },
+        { name: 'Render Blueprint (render.yaml)', role: 'Declarative Infrastructure as Code for automatic cloud builds' }
       ]
     }
   ];

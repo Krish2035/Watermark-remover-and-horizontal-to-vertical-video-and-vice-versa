@@ -1,0 +1,19 @@
+services:
+  # Backend Web Service for Render
+  - type: web
+    name: clearmark-ai-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false # Set in Render Dashboard from Neon Tech
+      - key: REDIS_URL
+        sync: false # Optional: Upstash or Render Redis
