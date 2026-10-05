@@ -255,10 +255,21 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 /**
- * ====================================================================
- * CORE MEDIA PROCESSING & HEALTH ENDPOINTS
- * ====================================================================
+ * Root Route: Service Info & Documentation Directory
  */
+app.get('/', (req, res) => {
+  res.json({
+    status: 'online',
+    service: 'ClearMark AI Backend API Engine',
+    version: '2.0.0',
+    documentation: '/api/docs',
+    health: '/api/health',
+    security: {
+      auth: 'JWT HttpOnly Cookie',
+      protection: 'DDoS Rate-Limited'
+    }
+  });
+});
 
 /**
  * @openapi
