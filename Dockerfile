@@ -12,25 +12,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files and install dependencies
-COPY package*.json ./
+# Copy backend dependencies and install
+COPY backend/package*.json ./
 RUN npm install --omit=dev
 
-# Copy application source code
-COPY . .
+# Copy backend source files
+COPY backend/ ./
 
-# Ensure storage directories exist
+# Create necessary storage directories
 RUN mkdir -p uploads processed
 
-# Set environment variables
 ENV NODE_ENV=production
 ENV PORT=5000
 
-# Expose backend port
 EXPOSE 5000
 
-# Start server
 CMD ["node", "server.js"]
