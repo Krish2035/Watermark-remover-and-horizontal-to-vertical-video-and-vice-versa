@@ -1,11 +1,12 @@
-# Base image with Node.js 20 on Debian
-FROM node:20-bullseye-slim
+# Base image with modern Node.js 20 on Debian 12 (Bookworm)
+FROM node:20-bookworm-slim
 
-# Install system dependencies: FFmpeg, Python3, and build tools
+# Install system dependencies: FFmpeg, Python3, OpenCV, NumPy, and CA certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
-    python3-pip \
+    python3-numpy \
+    python3-opencv \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
