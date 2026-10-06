@@ -71,6 +71,15 @@ const PROCESSED_DIR = path.join(__dirname, 'processed');
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/processed', express.static(PROCESSED_DIR));
 
+// Health check endpoint (used by UptimeRobot & Render to prevent spin-down)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy', uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+  res.status(200).send('Watermark Remover API Server is awake and running.');
+});
+
 // Interactive Swagger UI documentation
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
 app.get('/api/docs.json', (req, res) => {
