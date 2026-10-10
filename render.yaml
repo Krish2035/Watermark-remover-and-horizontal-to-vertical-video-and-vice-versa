@@ -13,6 +13,8 @@ services:
         value: 5000
       - key: NODE_ENV
         value: production
+      - key: BACKEND_URL
+        value: https://clearmark-ai-backend.onrender.com
       - key: DATABASE_URL
         sync: false # Set in Render Dashboard from Neon Tech
       - key: REDIS_URL

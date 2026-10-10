@@ -1,14 +1,37 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Download, RotateCcw, CheckCircle2, Sliders, SplitSquareVertical, Sparkles, Eye, Share2, Layers } from 'lucide-react';
+import { Download, RotateCcw, CheckCircle2, Sliders, SplitSquareVertical, Sparkles, Eye, Share2, Layers, Loader2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { downloadMediaFile, sanitizeMediaUrl } from '../utils/downloadHelper';
 
 export default function ResultViewer({ result, onReset }) {
   const [sliderPos, setSliderPos] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
   const [viewMode, setViewMode] = useState('slider'); // 'slider' | 'side-by-side'
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
   const containerRef = useRef(null);
+
+  const cleanUrl = sanitizeMediaUrl(result.cleanUrl);
+  const originalUrl = sanitizeMediaUrl(result.originalUrl);
+  const downloadUrl = sanitizeMediaUrl(result.downloadUrl || result.cleanUrl);
+
+  const handleDownload = async () => {
+    if (isDownloading) return;
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const fallbackName = isVideo ? 'clean-video.mp4' : 'clean-image.png';
+      await downloadMediaFile(downloadUrl, fallbackName);
+    } catch (err) {
+      console.error('Download error:', err);
+      setDownloadError('Could not download file directly. Opening in new tab...');
+      window.open(downloadUrl, '_blank');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   useEffect(() => {
     // Fire celebratory confetti on finish
@@ -153,7 +176,7 @@ export default function ResultViewer({ result, onReset }) {
                 aspectRatio: '16/9'
               }}>
                 <video
-                  src={result.originalUrl}
+                  src={originalUrl}
                   controls
                   style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 />
@@ -186,7 +209,7 @@ export default function ResultViewer({ result, onReset }) {
                 aspectRatio: '16/9'
               }}>
                 <video
-                  src={result.cleanUrl}
+                  src={cleanUrl}
                   controls
                   autoPlay
                   loop
@@ -208,7 +231,7 @@ export default function ResultViewer({ result, onReset }) {
           >
             {/* Background: Clean Image (Watermark Removed) */}
             <div className="split-layer">
-              <img src={result.cleanUrl} alt="Clean result" />
+              <img src={cleanUrl} alt="Clean result" />
               <div style={{
                 position: 'absolute',
                 top: '16px',
@@ -233,7 +256,7 @@ export default function ResultViewer({ result, onReset }) {
                 clipPath: `polygon(0 0, ${sliderPos}% 0, ${sliderPos}% 100%, 0 100%)`
               }}
             >
-              <img src={result.originalUrl} alt="Original image" />
+              <img src={originalUrl} alt="Original image" />
               <div style={{
                 position: 'absolute',
                 top: '16px',
@@ -298,7 +321,7 @@ export default function ResultViewer({ result, onReset }) {
               </div>
               <div style={{ height: '420px', borderRadius: '12px', overflow: 'hidden', background: '#05070c' }}>
                 <img
-                  src={result.originalUrl}
+                  src={originalUrl}
                   alt="Original"
                   style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 />
@@ -324,7 +347,7 @@ export default function ResultViewer({ result, onReset }) {
               </div>
               <div style={{ height: '420px', borderRadius: '12px', overflow: 'hidden', background: '#05070c' }}>
                 <img
-                  src={result.cleanUrl}
+                  src={cleanUrl}
                   alt="Clean result"
                   style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 />
@@ -354,16 +377,34 @@ export default function ResultViewer({ result, onReset }) {
           Remove Another Watermark
         </button>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <a
-            href={result.downloadUrl || result.cleanUrl}
-            download
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+          <button
+            onClick={handleDownload}
+            disabled={isDownloading}
             className="btn-primary"
-            style={{ textDecoration: 'none' }}
+            style={{
+              cursor: isDownloading ? 'not-allowed' : 'pointer',
+              opacity: isDownloading ? 0.85 : 1,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
           >
-            <Download size={18} />
-            Download Clean {isVideo ? 'Video (.MP4)' : 'Image'}
-          </a>
+            {isDownloading ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                <span>Downloading {isVideo ? 'Video' : 'Image'}...</span>
+              </>
+            ) : (
+              <>
+                <Download size={18} />
+                <span>Download Clean {isVideo ? 'Video (.MP4)' : 'Image'}</span>
+              </>
+            )}
+          </button>
+          {downloadError && (
+            <span style={{ fontSize: '0.8rem', color: '#f87171' }}>{downloadError}</span>
+          )}
         </div>
       </div>
     </div>

@@ -34,6 +34,28 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 
+// Trust reverse proxies (Render, Vercel, Cloudflare, etc.) for HTTPS detection
+app.set('trust proxy', 1);
+
+/**
+ * Determine the public base server URL.
+ * Automatically adapts to Render (RENDER_EXTERNAL_URL), custom BACKEND_URL, or x-forwarded-proto.
+ */
+function getServerUrl(req) {
+  if (process.env.BACKEND_URL) {
+    return process.env.BACKEND_URL.replace(/\/$/, '');
+  }
+  if (process.env.RENDER_EXTERNAL_URL) {
+    return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
+  }
+  const host = req.get('host') || `localhost:${PORT}`;
+  const isLocal = host.includes('localhost') || host.includes('127.0.0.1');
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = (forwardedProto ? forwardedProto.split(',')[0].trim() : null) || req.protocol || 'http';
+  const safeProto = isLocal ? proto : 'https';
+  return `${safeProto}://${host}`;
+}
+
 // Setup Socket.io for real-time progress updates
 const io = new SocketIOServer(server, {
   cors: { origin: true, credentials: true, methods: ['GET', 'POST'] }
@@ -45,10 +67,11 @@ io.on('connection', (socket) => {
   });
 });
 
-// Middleware with Credentials & Cookies support
+// Middleware with Credentials & Cookies support and exposed headers for file downloads
 app.use(cors({
   origin: true, // Allow frontend origin dynamically
-  credentials: true // Allow HttpOnly cookies to pass through
+  credentials: true, // Allow HttpOnly cookies to pass through
+  exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type']
 }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
@@ -67,9 +90,16 @@ const PROCESSED_DIR = path.join(__dirname, 'processed');
   }
 });
 
-// Serve static uploads and processed files
-app.use('/uploads', express.static(UPLOADS_DIR));
-app.use('/processed', express.static(PROCESSED_DIR));
+// Serve static uploads and processed files with cross-origin playback headers
+const staticOptions = {
+  setHeaders: (res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Accept-Ranges', 'bytes');
+  }
+};
+app.use('/uploads', express.static(UPLOADS_DIR, staticOptions));
+app.use('/processed', express.static(PROCESSED_DIR, staticOptions));
 
 // Health check endpoint (used by UptimeRobot & Render to prevent spin-down)
 app.get('/health', (req, res) => {
@@ -341,7 +371,7 @@ app.post('/api/upload', optionalAuth, upload.single('media'), async (req, res) =
     const isVideo = file.mimetype.startsWith('video/');
     const mediaType = isVideo ? 'video' : 'image';
     const fileId = path.parse(file.filename).name;
-    const serverUrl = `${req.protocol}://${req.get('host')}`;
+    const serverUrl = getServerUrl(req);
     const fileUrl = `${serverUrl}/uploads/${file.filename}`;
 
     let detectionData = null;
@@ -453,7 +483,7 @@ app.post('/api/remove-watermark', mediaLimiter, optionalAuth, async (req, res) =
         const filePath = path.join(UPLOADS_DIR, matched);
         const ext = path.extname(matched).toLowerCase();
         const isVideo = ['.mp4', '.mov', '.webm', '.avi', '.mkv'].includes(ext);
-        const serverUrl = `${req.protocol}://${req.get('host')}`;
+        const serverUrl = getServerUrl(req);
         fileRecord = {
           fileId,
           filename: matched,
@@ -491,7 +521,7 @@ app.post('/api/remove-watermark', mediaLimiter, optionalAuth, async (req, res) =
     const ext = path.extname(fileRecord.filename);
     const cleanFilename = `${fileId}-clean${mediaType === 'video' ? '.mp4' : ext}`;
     const cleanFilePath = path.join(PROCESSED_DIR, cleanFilename);
-    const serverUrl = `${req.protocol}://${req.get('host')}`;
+    const serverUrl = getServerUrl(req);
     const cleanUrl = `${serverUrl}/processed/${cleanFilename}`;
 
     let maskPath = null;
@@ -563,7 +593,7 @@ app.post('/api/video-details', upload.single('video'), async (req, res) => {
     let fileId = req.body?.fileId;
     let originalName = 'video.mp4';
     let fileUrl = null;
-    const serverUrl = `${req.protocol}://${req.get('host')}`;
+    const serverUrl = getServerUrl(req);
 
     if (req.file) {
       filePath = req.file.path;
@@ -627,7 +657,7 @@ app.post('/api/convert-aspect-ratio', mediaLimiter, optionalAuth, upload.single(
     let fileId = req.body?.fileId;
     let originalName = 'video.mp4';
     let fileUrl = null;
-    const serverUrl = `${req.protocol}://${req.get('host')}`;
+    const serverUrl = getServerUrl(req);
 
     const targetOrientation = req.body?.targetOrientation || 'vertical';
     const mode = req.body?.mode || 'blur';
@@ -732,17 +762,44 @@ app.post('/api/convert-aspect-ratio', mediaLimiter, optionalAuth, upload.single(
  *     summary: Download Clean or Converted Media
  */
 app.get('/api/download/:type/:filename', (req, res) => {
-  const { filename } = req.params;
-  const customName = req.query.name || filename;
-  const filePath = path.join(PROCESSED_DIR, filename);
+  const safeFilename = path.basename(req.params.filename);
+  let filePath = path.join(PROCESSED_DIR, safeFilename);
 
   if (!fs.existsSync(filePath)) {
-    return res.status(404).send('Processed file not found');
+    filePath = path.join(UPLOADS_DIR, safeFilename);
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Processed media file not found or expired.' });
+  }
+
+  const customName = req.query.name || safeFilename;
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Expose headers for cross-origin browser downloads
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Type');
+
+  const mimeTypes = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.mkv': 'video/x-matroska',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp'
+  };
+  if (mimeTypes[ext]) {
+    res.setHeader('Content-Type', mimeTypes[ext]);
   }
 
   res.download(filePath, customName, (err) => {
-    if (err) {
+    if (err && !res.headersSent) {
       console.error('Download error:', err);
+      res.status(500).json({ error: 'Failed to download file' });
     }
   });
 });

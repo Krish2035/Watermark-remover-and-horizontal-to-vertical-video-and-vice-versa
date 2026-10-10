@@ -14,10 +14,12 @@ import {
   RotateCcw,
   Sliders,
   Layers,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { io } from 'socket.io-client';
+import { downloadMediaFile, sanitizeMediaUrl } from '../utils/downloadHelper';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
@@ -34,6 +36,7 @@ export default function VideoAspectModal({ isOpen, onClose, initialVideoFile = n
 
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [progressStep, setProgressStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState(null);
   const [result, setResult] = useState(null);
@@ -490,7 +493,7 @@ export default function VideoAspectModal({ isOpen, onClose, initialVideoFile = n
                   }}
                 >
                   <video
-                    src={result.convertedUrl}
+                    src={sanitizeMediaUrl(result.convertedUrl)}
                     controls
                     autoPlay
                     loop
@@ -509,22 +512,44 @@ export default function VideoAspectModal({ isOpen, onClose, initialVideoFile = n
               </button>
 
               <div style={{ display: 'flex', gap: '10px' }}>
-                <a
-                  href={result.downloadUrl}
-                  download
+                <button
+                  onClick={async () => {
+                    if (isDownloading || !result?.downloadUrl) return;
+                    setIsDownloading(true);
+                    try {
+                      const fallbackName = `${result.targetOrientation === 'vertical' ? 'vertical-9x16' : 'horizontal-16x9'}-converted.mp4`;
+                      await downloadMediaFile(result.downloadUrl, fallbackName);
+                    } catch (err) {
+                      console.error('Download error:', err);
+                      window.open(sanitizeMediaUrl(result.downloadUrl), '_blank');
+                    } finally {
+                      setIsDownloading(false);
+                    }
+                  }}
+                  disabled={isDownloading}
                   className="btn-primary"
                   style={{
                     padding: '12px 24px',
                     fontSize: '0.95rem',
-                    textDecoration: 'none',
+                    cursor: isDownloading ? 'not-allowed' : 'pointer',
+                    opacity: isDownloading ? 0.85 : 1,
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '8px'
                   }}
                 >
-                  <Download size={18} />
-                  <span>Download Converted Video (.MP4)</span>
-                </a>
+                  {isDownloading ? (
+                    <>
+                      <Loader2 size={18} className="animate-spin" />
+                      <span>Downloading Video...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={18} />
+                      <span>Download Converted Video (.MP4)</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </div>
